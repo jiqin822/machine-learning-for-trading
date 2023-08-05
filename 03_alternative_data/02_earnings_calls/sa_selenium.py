@@ -12,9 +12,19 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from furl import furl
 from selenium import webdriver
+from urllib.parse import urlparse
 
 transcript_path = Path('transcripts')
+transcript_html_path = Path('transcripts/html')
 
+
+def get_filename_by_url(url):
+    # Parse the URL
+    parsed_url = urlparse(url)
+
+    # Split the path by '/' and get the last part
+    last_part = parsed_url.path.split('/')[-1]
+    return last_part
 
 def store_result(meta, participants, content):
     """Save parse content to csv"""
@@ -25,6 +35,9 @@ def store_result(meta, participants, content):
     pd.DataFrame(participants, columns=['type', 'name']).to_csv(path / 'participants.csv', index=False)
     pd.Series(meta).to_csv(path / 'earnings.csv')
 
+def save_html(content, filename):
+    with open(filename, 'w') as f:
+        f.write(content)
 
 def parse_html(html):
     """Main html parser function"""
@@ -33,26 +46,26 @@ def parse_html(html):
     soup = BeautifulSoup(html, 'lxml')
 
     meta, participants, content = {}, [], []
-    h1 = soup.find('h1', itemprop='headline')
+#    h1 = soup.find('h1', itemprop='headline')
+    h1 = soup.find('h1', {'data-test-id': 'post-title'})
+    # Print the text inside the h1 tag
     if h1 is None:
+        print('Headline not found, abandon parsing')
         return
     h1 = h1.text
     meta['company'] = h1[:h1.find('(')].strip()
     meta['symbol'] = h1[h1.find('(') + 1:h1.find(')')]
 
-    title = soup.find('div', class_='title')
-    if title is None:
-        return
-    title = title.text
-    print(title)
-    match = date_pattern.search(title)
+    subtitle = soup.find('span', {'data-test-id': 'post-date'})
+#    print(subtitle)
+    match = date_pattern.search(subtitle.text)
     if match:
         m, d, y = match.groups()
         meta['month'] = int(m)
         meta['day'] = int(d)
         meta['year'] = int(y)
 
-    match = quarter_pattern.search(title)
+    match = quarter_pattern.search(h1)
     if match:
         meta['quarter'] = match.group(0)
 
@@ -90,7 +103,7 @@ page = 1
 driver = webdriver.Firefox()
 while next_page:
     print(f'Page: {page}')
-    url = f'{SA_URL}/earnings/earnings-call-transcripts/{page}'
+    url = f'{SA_URL}/earnings/earnings-call-transcripts?page={page}'
     driver.get(urljoin(SA_URL, url))
     sleep(8 + (random() - .5) * 2)
     response = driver.page_source
@@ -102,15 +115,27 @@ while next_page:
     else:
         for link in links:
             transcript_url = link.attrs.get('href')
-            article_url = furl(urljoin(SA_URL, transcript_url)).add({'part': 'single'})
-            driver.get(article_url.url)
-            html = driver.page_source
+            transcript_url = urljoin(SA_URL, transcript_url)
+            filename = get_filename_by_url(transcript_url) + '.html'
+            file_path = transcript_html_path/filename
+            file_exists = file_path.is_file()
+            
+            if not file_exists:
+                article_url = furl(transcript_url).add({'part': 'single'})
+                driver.get(article_url.url)
+                html = driver.page_source
+                save_html(html, file_path)
+                sleep(8 + (random() - .5) * 2)
+            else:
+                with open(file_path, 'r') as f:
+                    html = f.read()
             result = parse_html(html)
             if result is not None:
                 meta, participants, content = result
                 meta['link'] = link
                 store_result(meta, participants, content)
-                sleep(8 + (random() - .5) * 2)
+            else:
+                print('Failed to scrape ',transcript_url)
 
 driver.close()
-# pd.Series(articles).to_csv('articles.csv')
+#pd.Series(articles).to_csv('articles.csv')
